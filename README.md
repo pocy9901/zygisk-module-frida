@@ -13,7 +13,9 @@ zygisk-module使用的v4的api
 
 ```
 frida 标记代表注入libget.so
+
 ssl 代表拦截SSL_CTX_new获取SSL的随机字符串
+
 ^com.android.browser$ 表示严格匹配com.android.browser，才进行注入
 
 对于frida标记，还需要一个libgadget.config.so文件放到`/data/local/tmp/libgadget.config.so`
