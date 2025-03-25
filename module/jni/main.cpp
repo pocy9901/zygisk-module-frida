@@ -16,17 +16,19 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <string.h>
-#include <android/log.h>
 #include <dlfcn.h>
 
+#include "xdl.h"
+
+#include "log.h"
 #include "zygisk.hpp"
 #include "func.h"
+
 
 using zygisk::Api;
 using zygisk::AppSpecializeArgs;
 using zygisk::ServerSpecializeArgs;
 
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, "FFC", __VA_ARGS__)
 
 void sslkeylog_callback(const void *ssl, const char *line) {
     LOGD("sk:%s\n", line);
@@ -117,7 +119,7 @@ public:
         char * rules = this->rule_content;
         if(rules != NULL) {
             const char * match_content = process;
-            char type[20] = {0};
+            char type[512] = {0};
             int go = match_rule(match_content, rules, size, type);
             free(rules);
             this->rule_content = NULL;
@@ -125,12 +127,13 @@ public:
 
             LOGD("(%s) postAppSpecialize match %d\n", process, go);
             if(go) {
-                if(strstr(type, "ssl") != NULL) {// hook ssl
+                if(strstr(type, "ssl") == type) {// hook ssl
                     dev_t  dev;
                     ino_t ino;
                     if(get_module_devinfo("libjavacrypto.so", pid, &dev, &ino) > 0) {
-                        void* libssl = dlopen("libssl.so", RTLD_NOW);
-                        __SSL_CTX_set_keylog_callback = (void (*)(void *, void (*)(const void *, const char *)))dlsym(libssl, "SSL_CTX_set_keylog_callback");
+                        void *libssl = xdl_open("libssl.so", XDL_DEFAULT);
+                        __SSL_CTX_set_keylog_callback = (void (*)(void *, void (*)(const void *, const char *)))xdl_sym(libssl, "SSL_CTX_set_keylog_callback",
+                                                                                                                        nullptr);
                         LOGD("__SSL_CTX_set_keylog_callback %lx", (unsigned long)__SSL_CTX_set_keylog_callback);
 
                         api->pltHookRegister(dev, ino, "SSL_CTX_new", (void *)_SSL_CTX_new, (void **)&__SSL_CTX_new);
@@ -146,12 +149,26 @@ public:
 
                     LOGD("(%s) %lx %lx find ssl\n", process, (unsigned long)__SSL_CTX_set_keylog_callback, (unsigned long)__SSL_CTX_new);
                 }
-                if(strstr(type, "frida") != NULL) {// load frida.so
-                    void* frida = dlopen("libget.so", RTLD_NOW);
+                if(strstr(type, "frida") == type) {// load frida.so
+                    void *frida = xdl_open("libget.so", XDL_TRY_FORCE_LOAD);
                     if(NULL == frida) {
-                        LOGD("(%s) load frida-gadget failed, error: %s\n", process, dlerror());
+                        LOGD("(%s) load frida-gadget failed %s\n", process, dlerror());
                     } else {
                         LOGD("(%s) load frida-gadget success\n", process);
+                    }
+                }
+                if(strstr(type, "load:") == type) {// load xx.so
+                    char * sofile = type + 5;
+                    void *soload = xdl_open(sofile, XDL_TRY_FORCE_LOAD);
+                    if(NULL == soload) {
+                        LOGD("(%s) load %s failed %s\n", process, sofile, dlerror());
+                    } else {
+                        typedef void *(*onLoad)(const char *, void *);
+                        LOGD("(%s) load %s success\n", process, sofile);
+                        onLoad  onloadFunc = (onLoad)xdl_sym(soload, "onLoad",nullptr);
+                        if(onloadFunc != nullptr) {
+                            onloadFunc(process, api);
+                        }
                     }
                 }
             }
@@ -184,7 +201,7 @@ private:
         //LOGD("preAppSpecialize in %s %d", process, pid);
         if(rules != NULL) {
             const char * match_content = process;
-            char type[20] = {0};
+            char type[512] = {0};
             int go = match_rule(match_content, rules, size, type);
             if(go) {
                 LOGD("matched in %s %d", process, pid);
